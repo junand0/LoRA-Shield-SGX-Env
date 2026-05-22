@@ -1,0 +1,55 @@
+# Gramine manifest for GPU passthrough experiment (Stage 2b).
+# Exposes /dev/nvidia* to the enclave; NO ioctl structs defined yet, so we can
+# observe which NVIDIA ioctl Gramine blocks first. Attestation disabled.
+
+libos.entrypoint = "{{ entrypoint }}"
+
+loader.entrypoint.uri = "file:{{ gramine.libos }}"
+loader.log_level = "{{ log_level }}"
+loader.insecure__use_cmdline_argv = true
+loader.env.LD_LIBRARY_PATH = "/usr/local/lib/python3.12/dist-packages/torch/lib:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/lib:/opt/hpcx/ompi/lib:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/lib:{{ arch_libdir }}:/usr/{{ arch_libdir }}:/usr/lib:/usr/local/lib:/usr/local/cuda/lib64"
+loader.env.PATH = "/usr/bin:/bin"
+loader.env.HOME = "/root"
+
+sys.enable_sigterm_injection = true
+
+fs.mounts = [
+  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+  { path = "{{ arch_libdir }}", uri = "file:{{ arch_libdir }}" },
+  { path = "/usr", uri = "file:/usr" },
+  { path = "/opt", uri = "file:/opt" },
+  { path = "/etc", uri = "file:/etc" },
+  { path = "/workspace", uri = "file:/workspace" },
+  { type = "tmpfs", path = "/tmp" },
+  { type = "chroot", path = "/dev/nvidiactl", uri = "dev:/dev/nvidiactl" },
+  { type = "chroot", path = "/dev/nvidia0", uri = "dev:/dev/nvidia0" },
+  { type = "chroot", path = "/dev/nvidia-uvm", uri = "dev:/dev/nvidia-uvm" },
+  { type = "chroot", path = "/dev/nvidia-uvm-tools", uri = "dev:/dev/nvidia-uvm-tools" },
+]
+
+sgx.debug = true
+sgx.edmm_enable = true
+sgx.enclave_size = "16G"
+sgx.max_threads = 64
+sgx.remote_attestation = "none"
+
+sgx.trusted_files = [
+  "file:{{ gramine.libos }}",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:{{ entrypoint }}",
+  "file:/workspace/app/",
+]
+
+# Dev bring-up: /usr (incl. runtime-injected libcuda) is allowed, not measured.
+sgx.allowed_files = [
+  "file:{{ arch_libdir }}/",
+  "file:/usr/",
+  "file:/opt/",
+  "file:/etc/",
+  "dev:/dev/nvidiactl",
+  "dev:/dev/nvidia0",
+  "dev:/dev/nvidia-uvm",
+  "dev:/dev/nvidia-uvm-tools",
+]
+
+# sys.ioctl_structs / sys.allowed_ioctls: intentionally empty for now (find first blocker).

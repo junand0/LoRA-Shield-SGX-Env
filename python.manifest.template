@@ -1,0 +1,47 @@
+# Gramine manifest for a Python workload (Stage 1: CPU + DCAP, no GPU yet).
+# Build: gramine-manifest -Dentrypoint=<py> -Darch_libdir=/lib/x86_64-linux-gnu \
+#          python.manifest.template python.manifest
+#        gramine-sgx-sign --manifest python.manifest --output python.manifest.sgx
+# Run:   gramine-sgx python <script.py>
+
+libos.entrypoint = "{{ entrypoint }}"
+
+loader.entrypoint.uri = "file:{{ gramine.libos }}"
+loader.log_level = "{{ log_level }}"
+loader.insecure__use_cmdline_argv = true
+loader.env.LD_LIBRARY_PATH = "/lib:{{ arch_libdir }}:/usr/{{ arch_libdir }}:/usr/lib:/usr/local/lib"
+loader.env.PATH = "/usr/bin:/bin"
+loader.env.HOME = "/root"
+
+sys.enable_sigterm_injection = true
+
+fs.mounts = [
+  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+  { path = "{{ arch_libdir }}", uri = "file:{{ arch_libdir }}" },
+  { path = "/usr", uri = "file:/usr" },
+  { path = "/etc", uri = "file:/etc" },
+  { path = "/workspace", uri = "file:/workspace" },
+]
+
+sgx.debug = true
+sgx.edmm_enable = true
+sgx.enclave_size = "4G"
+sgx.max_threads = 32
+
+sgx.remote_attestation = "{{ ra_type }}"
+
+sgx.trusted_files = [
+  "file:{{ gramine.libos }}",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:{{ arch_libdir }}/",
+  "file:/usr/{{ arch_libdir }}/",
+  "file:{{ entrypoint }}",
+  "file:/usr/lib/python3.12/",
+  "file:/workspace/app/",
+]
+
+# Dev bring-up: large/optional trees are allowed (not measured). Tighten for production.
+sgx.allowed_files = [
+  "file:/etc/",
+  "file:/usr/local/lib/python3.12/dist-packages/",
+]
