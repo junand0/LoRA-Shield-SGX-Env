@@ -125,6 +125,30 @@ Gramine DCAP quote 요청
 
 ---
 
+## 8b. IPC 벤치마크 — TCP vs untrusted_shm ✅
+
+같은 워크로드(256KB 페이로드, 64×1024 ⊗ 1024×1024 = H100 matmul, OTP 마스킹·언마스킹 포함)를 200회 라운드트립으로 측정.
+
+| metric | TCP (μs) | SHM (μs) | speedup |
+|---|---:|---:|---:|
+| mean | 1302 | **475** | **2.7×** |
+| p50 | 1278 | 451 | 2.8× |
+| p95 | 1377 | 555 | 2.5× |
+| **p99** | **7088** | **918** | **7.7×** |
+| max | 15950 | 1218 | **13×** |
+
+- 평균 2.7×, 꼬리(p99/max)는 7.7~13× 개선. TCP의 직렬화·소켓 syscall·커널 버퍼링 비용이 통째로 사라짐.
+- **분해 측정(`--noop` 추가)으로 IPC 자체 비용 확정:**
+  - SHM 256KB noop: mean **198μs** (≒ 데이터 이동 ~193μs + 순수 sync ~5μs)
+  - SHM 16B noop: mean **5.1μs** ← 순수 동기화 바닥(폴링+atomic+python)
+  - TCP 256KB noop: mean **520μs** → 같은 size에서 SHM은 IPC만 봐도 ~2.6× 빠름
+  - GPU 추가 비용(=전체−noop) ≈ 700~1000μs (matmul + cudaMemcpy + sync), run-to-run 변동 큼
+  - 즉 SHM 256KB 전체의 IPC 자체 비중은 약 ~200μs이고, 그중 데이터 memcpy/Python wrap이 대부분. 진짜 zero-copy(`np.frombuffer` 뷰 직접 대입)로 더 줄일 여지 있음.
+- 메커니즘: Gramine `untrusted_shm` 마운트(`{ type="untrusted_shm", path="/dev/shm", uri="dev:/dev/shm/" }`) + 두 컨테이너 `--ipc=host` → 같은 물리 페이지. 동기화는 x86 TSO 기반 sequence-number 폴링(추가 lock 불필요).
+- caveat: 워커 tight spin이라 1코어 100% 점유 — 운영에선 hybrid spin/sleep 권장. 페이로드는 untrusted 메모리지만 분리형 설계상 마스킹된 데이터만 흐르므로 OK.
+
+산출 파일: `proto/bench_worker.py`, `app/bench_client.py`, `proto/run-bench.sh`. manifest에 `/dev/shm` `untrusted_shm` 마운트 + `dev:/dev/shm/` allowed_files 추가됨.
+
 ## 9. 산출물 (`/home/user/tee/`)
 
 | 파일 | 역할 |
@@ -135,8 +159,10 @@ Gramine DCAP quote 요청
 | `app/client.py` | enclave 안 trusted 클라이언트 (OTP 마스킹 데모) |
 | `app/smoke_dcap.py` | DCAP quote 생성 스모크(§5에서 차단 확인) |
 | `app/gpu_test.py` | enclave 내 CUDA 테스트(§7) |
-| `proto/worker.py` | untrusted GPU 워커 (일반 CUDA) |
+| `proto/worker.py` | untrusted GPU 워커 (TCP, 일반 CUDA) |
 | `proto/run-proto.sh` | 분리형 E2E 실행 스크립트 |
+| `proto/bench_worker.py` / `app/bench_client.py` | TCP/SHM 양쪽 모드 벤치마크 |
+| `proto/run-bench.sh` | TCP vs SHM 벤치 일괄 실행 |
 | `run-shell.sh` | enclave 컨테이너 대화형 진입 (전 SGX 배선 포함) |
 
 ---
@@ -159,6 +185,54 @@ docker run --rm \
 ```
 
 ---
+
+## 8c. Step 1 — cross-process GPU↔enclave handoff (cuStreamWaitValue) ✅
+
+LoRO-on-SGX 디자인의 마스터 가정 검증. enclave가 `/dev/shm/loro_smoke.bin`에 u32 write → worker가 `cudaHostRegister`로 같은 페이지를 pin → GPU 스트림이 `cuStreamWaitValue32`로 polling.
+
+```
+[worker] device 0: NVIDIA H100 NVL (cc 9.0)
+[worker] iters= 10000 per_handoff= 7.955us
+[worker] iters=100000 per_handoff= 6.850us  ← warmup amortized
+```
+
+| 메커니즘 | 1회 handoff RTT |
+|---|---:|
+| in-process `cudaLaunchHostFunc` (원본) | ~1~3 μs |
+| **enclave SHM + cuStreamWaitValue (실측)** | **~7 μs** |
+| Python tight-spin SHM (이전) | ~200 μs |
+| TCP SHM (이전) | ~1300 μs |
+
+→ 이전 Python SHM 대비 ~28× 빠르고, 원본 대비 2~3× 손실 정도. enclave 측을 C로 바꾸면 ~3μs까지. 220 handoff/forward × 7μs = ~1.5ms → **decode 50ms → ~52ms (+4%)** 추정이 실측으로 뒷받침됨.
+
+CUDA-13 gotcha: runtime API `cudaStreamWaitValue32`/`WriteValue32` 심볼은 **삭제됨**. driver API `cuStreamWaitValue32`/`cuStreamWriteValue32`를 `<cuda.h>` + `-lcuda`로 사용. flag enum은 `CU_STREAM_WAIT_VALUE_EQ`.
+
+Manifest 갱신: `/workspace/proto/`를 `sgx.allowed_files`에 추가 (이전엔 `/workspace/app/`만 허용).
+
+산출: `proto/smoke_csv/{worker.cu,enclave.py,run-smoke.sh}`.
+
+## 8d. Step 2 — 데이터 운반 handoff RTT sweep ✅ (2026-05-26)
+
+같은 cross-process 메커니즘(`cuStreamWriteValue`/`WaitValue` on `cudaHostRegister`'d untrusted_shm)으로 페이로드까지 운반. Per-iter 라운드트립 = `cudaMemcpyAsync(D2H)` + signal + signal + `cudaMemcpyAsync(H2D)` + per-iter `cudaStreamSynchronize`. 200 iter씩, single-process sweep.
+
+| payload | mean (μs) | p50 | p95 | bw (GB/s) |
+|---:|---:|---:|---:|---:|
+| 16 KB | 19.93 | 19.53 | 22.25 | 1.6 |
+| 64 KB | 21.46 | 21.25 | 22.22 | 6.1 |
+| 256 KB | 36.85 | 36.78 | 38.07 | 14.2 |
+| 1 MB | 90.27 | 90.10 | 91.17 | 23.2 |
+| 4 MB | 319.53 | 319.77 | 321.74 | 26.3 |
+| 16 MB | 1206.72 | 1206.28 | 1209.20 | 27.8 |
+| 64 MB | 4825.88 | 4825.52 | 4858.35 | 27.8 |
+
+- ~20μs floor (sync + tiny memcpy). 256KB 이하 = latency-dominated. 1MB 이상 = bandwidth-bound ~28 GB/s.
+- p95가 mean 거의 같음 → 매우 안정적.
+- session reset 프로토콜: enclave가 W2E가 내려가는 걸 보고 expected를 1로 reset (`prev_w2e > v` 검출). 여러 worker invocation 사이에서 stale enclave state 문제 해결.
+- 트러블슈팅 메모: docker stdio 버퍼링이 hang처럼 보이게 함 → 워커 stdout/stderr를 컨테이너 내부 파일로 redirect한 뒤 host에서 읽으면 됨. CUDA 13에서 `cudaStreamWaitValue32`/`WriteValue32` runtime API는 삭제됨 — driver API (`cu*`) + `-lcuda` 필요.
+
+lora_shield 영향 추정 (실측 기반): decode +10~15% (multi-lane으로 추가 단축), prefill +10~15% (대부분 GPU compute에 hide). 원본 in-process 대비 충분히 근접.
+
+산출: `proto/smoke_data/{worker.cu,enclave.py,run-smoke.sh}`.
 
 ## 11. 남은 작업
 

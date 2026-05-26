@@ -24,6 +24,7 @@ mounts = [
     { path = "/usr", uri = "file:/usr" },
     { path = "/etc", uri = "file:/etc" },
     { path = "/workspace", uri = "file:/workspace" },
+    { type = "untrusted_shm", path = "/dev/shm", uri = "dev:/dev/shm/" },
 ]
 
 [sgx]
@@ -35,6 +36,8 @@ remote_attestation = "none"
 allowed_files = [
     "file:/etc/",
     "file:/usr/local/lib/python3.12/dist-packages/",
+    "file:/workspace/proto/",
+    "dev:/dev/shm/",
 ]
 isvprodid = 0
 isvsvn = 0
@@ -23584,6 +23587,10 @@ sha256 = "5dc473af6f6ae35e5531cc9705a1e4923aa07e7d35f6b4c275b90c6a3c2591c4"
 [[sgx.trusted_files]]
 uri = "file:/usr/lib/python3.12/zoneinfo/_zoneinfo.py"
 sha256 = "ebb9b679519a23252eb90541003a2fdbb3f2d7bc36713fd70672baa575dcdcb6"
+
+[[sgx.trusted_files]]
+uri = "file:/workspace/app/bench_client.py"
+sha256 = "2d97ed0e0442927966c5ab1a052a90ab784c34abb2ea8c52ca4358f1daf8c1c7"
 
 [[sgx.trusted_files]]
 uri = "file:/workspace/app/client.py"

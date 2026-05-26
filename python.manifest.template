@@ -21,6 +21,7 @@ fs.mounts = [
   { path = "/usr", uri = "file:/usr" },
   { path = "/etc", uri = "file:/etc" },
   { path = "/workspace", uri = "file:/workspace" },
+  { type = "untrusted_shm", path = "/dev/shm", uri = "dev:/dev/shm/" },
 ]
 
 sgx.debug = true
@@ -44,4 +45,6 @@ sgx.trusted_files = [
 sgx.allowed_files = [
   "file:/etc/",
   "file:/usr/local/lib/python3.12/dist-packages/",
+  "file:/workspace/proto/",
+  "dev:/dev/shm/",
 ]
