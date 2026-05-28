@@ -1,5 +1,5 @@
 [libos]
-entrypoint = "/usr/bin/python3.12"
+entrypoint = "/workspace/proto/smoke_data/enclave_ml"
 
 [loader]
 log_level = "error"
@@ -10,7 +10,7 @@ uri = "file:/usr/lib/x86_64-linux-gnu/gramine/libsysdb.so"
 sha256 = "e6014513d79ba404b73fcb310c619ddba07da66e696398829cd4a9eb3553c6a5"
 
 [loader.env]
-LD_LIBRARY_PATH = "/usr/local/lib/python3.12/dist-packages/torch/lib:/opt/hpcx/ompi/lib:/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda-13.0/compat:/lib:/lib/x86_64-linux-gnu:/usr//lib/x86_64-linux-gnu:/usr/lib:/usr/local/lib"
+LD_LIBRARY_PATH = "/lib:/lib/x86_64-linux-gnu:/usr//lib/x86_64-linux-gnu:/usr/lib:/usr/local/lib"
 PATH = "/usr/bin:/bin"
 HOME = "/root"
 
@@ -22,10 +22,8 @@ mounts = [
     { path = "/lib", uri = "file:/usr/lib/x86_64-linux-gnu/gramine/runtime/glibc" },
     { path = "/lib/x86_64-linux-gnu", uri = "file:/lib/x86_64-linux-gnu" },
     { path = "/usr", uri = "file:/usr" },
-    { path = "/opt", uri = "file:/opt" },
     { path = "/etc", uri = "file:/etc" },
     { path = "/workspace", uri = "file:/workspace" },
-    { type = "tmpfs", path = "/tmp" },
     { type = "untrusted_shm", path = "/dev/shm", uri = "dev:/dev/shm/" },
 ]
 
@@ -37,10 +35,8 @@ max_threads = 32
 remote_attestation = "none"
 allowed_files = [
     "file:/etc/",
-    "file:/usr/local/lib/",
-    "file:/opt/",
+    "file:/usr/local/lib/python3.12/dist-packages/",
     "file:/workspace/proto/",
-    "file:/workspace/lora_shield/",
     "dev:/dev/shm/",
 ]
 isvprodid = 0
@@ -18729,8 +18725,8 @@ uri = "file:/usr/lib/x86_64-linux-gnu/sox/libsox_fmt_xi.so"
 sha256 = "9c3145d7cc1d48edd72c44575e148ce8445b1ce773201c5fa4fdc19312e4398f"
 
 [[sgx.trusted_files]]
-uri = "file:/usr/bin/python3.12"
-sha256 = "1d3cf64f97cadc79fdc6fe2496a21b7b456cb94211978cfef5a65f616af74fd5"
+uri = "file:/workspace/proto/smoke_data/enclave_ml"
+sha256 = "192302981794dc80981608d567e2d0e89cb73492d0f27c32e85d35a866866c6d"
 
 [[sgx.trusted_files]]
 uri = "file:/usr/lib/python3.12/EXTERNALLY-MANAGED"

@@ -234,6 +234,71 @@ lora_shield 영향 추정 (실측 기반): decode +10~15% (multi-lane으로 추�
 
 산출: `proto/smoke_data/{worker.cu,enclave.py,run-smoke.sh}`.
 
+## 8e. Step 3 — C 기반 enclave responder ✅ (2026-05-26)
+
+Python responder를 C로 교체 (`enclave_c.c`, 16KB binary, glibc 정적 link 안 함, Gramine SGX 안에서 실행). 같은 sweep:
+
+| payload | Python | **C** | Δ |
+|---:|---:|---:|---:|
+| 16 KB | 19.93 | 20.01 | ~0 |
+| 64 KB | 21.46 | 20.85 | -0.6 |
+| 256 KB | 36.85 | 36.09 | -0.8 |
+| 1 MB | 90.27 | 90.01 | ~0 |
+| 4 MB | 319.53 | 318.95 | ~0 |
+| 16 MB | 1206.72 | 1208.12 | ~0 |
+| 64 MB | 4825.88 | 4778.21 | -1% |
+
+→ **거의 차이 없음**. Python의 spin polling 오버헤드는 floor의 주범이 아니었음. 진짜 비용은 **CUDA driver API의 per-call 오버헤드**(per-iter `cudaStreamSynchronize` + `cudaMemcpyAsync` 발급).
+
+다음 우선순위는 **Step 7 (CUDA Graph)** 로 재조정. Graph capture로 per-iter host API 호출을 제거하면 floor를 ~7-10μs 쪽으로 낮출 수 있을 것으로 예상 — 작은 페이로드(decode 영역)에서 큰 이득.
+
+산출: `proto/smoke_data/{enclave_c.c, run-smoke-c.sh}`.
+
+## 8f. Step 7a — BATCH 스윕 (per-iter sync 제거 효과) ✅ (2026-05-26)
+
+`worker.cu`에 BATCH 파라미터 추가, 같은 sweep을 BATCH={1, 4, 16, 64}로:
+
+| payload | BATCH=1 | BATCH=4 | BATCH=64 |
+|---:|---:|---:|---:|
+| 16 KB | 20.32 | 17.50 | **16.69** |
+| 64 KB | 24.92 | 18.02 | **16.37** |
+| 256 KB | 32.84 | 35.35 | 34.14 |
+| 1 MB | 93.43 | 91.53 | 91.53 |
+| 16 MB | 1209 | 1206 | 1206 |
+
+- per-iter `cudaStreamSynchronize` 비용 = ~5-8μs, 작은 페이로드에서만 의미. BATCH=4면 saturate.
+- 256KB+ 페이로드는 transfer-bound라 변화 없음.
+- 16μs floor가 이론 최소에 근접: `~7μs(hw sync) + ~5μs(cudaMemcpyAsync ×2) + ~1-2μs(writeValue) + 잔여`.
+- lora_shield의 decode 핸드오프(~0.5MB)는 transfer-bound이므로 batching의 직접 효과 작음.
+
+→ 추가 floor 단축은 Step 7b(CUDA Graph) 또는 zero-copy로 가능하지만 lora_shield 영역엔 marginal. **Step 4 (multi-lane V/QK 병렬)** 가 wall-clock 영향이 훨씬 큼.
+
+산출: `proto/smoke_data/{worker.cu, run-smoke-batch.sh, logs_batch/}`.
+
+## 8g. Step 4 — multi-lane SHM (V/QK 병렬) ✅ (2026-05-27)
+
+SHM을 N개 lane으로 나누고 각 lane = 독립 헤더(64B 정렬) + 독립 payload 영역. worker는 lane마다 CUDA stream + GPU 버퍼, enclave는 lane마다 pthread (Gramine SGX 안). 같은 ITERS=200 round, BATCH=4로 N_LANES={1,2,4} 측정:
+
+| payload | N=1 round | N=2 round | N=4 round | N=2 per-lane | N=4 per-lane |
+|---:|---:|---:|---:|---:|---:|
+| 16 KB | 15.16 | 29.35 | 57.95 | 14.68 | 14.49 |
+| 64 KB | 19.21 | 29.71 | 57.92 | 14.86 | 14.48 |
+| 256 KB | 34.38 | 50.58 | 90.10 | **25.29** | 22.53 |
+| 1 MB | 90.60 | 134.78 | 258.02 | **67.39** | 64.51 |
+| 4 MB | 313.97 | 507.38 | 985.25 | 253.69 | 246.31 |
+
+Aggregate bandwidth N=1 → N=4 (1MB): **23 → 32.5 GB/s** (PCIe DMA 동시 사용). Sub-linear지만 의미 있는 병렬화.
+
+Speedup (parallel vs sequential, 256KB-1MB 영역): **2-lane 1.3-1.4×**, 4-lane 1.4-1.5×. 16KB 작은 페이로드는 host issue가 직렬화돼 거의 안 늘어남.
+
+lora_shield 영향 갱신: 2-lane(V/QK 병렬) 적용 시 **decode +5-10%**, prefill +13-15%. 원본 in-process 4-stream 패턴을 분리형에서 IPC 레인으로 재현 가능 → "+10-15%" 디자인 목표 달성권.
+
+Gramine 안 pthread 다중 thread는 정상 작동 (각 enclave thread가 lane spin, 4400 ping-pong 검증). 각 lane은 독립 session 상태 유지.
+
+산출: `proto/smoke_data/{worker_ml.cu, enclave_ml.c, run-smoke-ml.sh, logs_ml/}`.
+
+코드 트랩 기록: `for (init; cond; expr1, expr2)`의 expr 평가는 좌→우. `for (int lane=0; lane<N; lane++, seq[lane]++)`는 `lane++` 가 먼저 실행돼 seq[lane=다음것]++가 됨. seq 증가는 본문 안에 둘 것.
+
 ## 11. 남은 작업
 
 - [ ] **운영 하드닝**: `sgx.debug=false`, `allowed_files` → `trusted_files`(측정)로 전환해 코드/모델을 MRENCLAVE에 고정, 서명키 분리(HSM)

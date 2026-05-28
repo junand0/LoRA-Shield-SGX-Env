@@ -9,7 +9,7 @@ libos.entrypoint = "{{ entrypoint }}"
 loader.entrypoint.uri = "file:{{ gramine.libos }}"
 loader.log_level = "{{ log_level }}"
 loader.insecure__use_cmdline_argv = true
-loader.env.LD_LIBRARY_PATH = "/lib:{{ arch_libdir }}:/usr/{{ arch_libdir }}:/usr/lib:/usr/local/lib"
+loader.env.LD_LIBRARY_PATH = "/usr/local/lib/python3.12/dist-packages/torch/lib:/opt/hpcx/ompi/lib:/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda-13.0/compat:/lib:{{ arch_libdir }}:/usr/{{ arch_libdir }}:/usr/lib:/usr/local/lib"
 loader.env.PATH = "/usr/bin:/bin"
 loader.env.HOME = "/root"
 
@@ -19,8 +19,10 @@ fs.mounts = [
   { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
   { path = "{{ arch_libdir }}", uri = "file:{{ arch_libdir }}" },
   { path = "/usr", uri = "file:/usr" },
+  { path = "/opt", uri = "file:/opt" },
   { path = "/etc", uri = "file:/etc" },
   { path = "/workspace", uri = "file:/workspace" },
+  { type = "tmpfs", path = "/tmp" },
   { type = "untrusted_shm", path = "/dev/shm", uri = "dev:/dev/shm/" },
 ]
 
@@ -44,7 +46,9 @@ sgx.trusted_files = [
 # Dev bring-up: large/optional trees are allowed (not measured). Tighten for production.
 sgx.allowed_files = [
   "file:/etc/",
-  "file:/usr/local/lib/python3.12/dist-packages/",
+  "file:/usr/local/lib/",
+  "file:/opt/",
   "file:/workspace/proto/",
+  "file:/workspace/lora_shield/",
   "dev:/dev/shm/",
 ]
