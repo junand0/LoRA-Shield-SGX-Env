@@ -10,17 +10,28 @@
 
 - **민감 자산**: 학습/추론 데이터 **와** LoRA 가중치 (둘 다 비밀)
 - **보호 방식**: enclave(CPU)에서 **OTP 가법 마스킹** → 마스킹된 데이터만 GPU로 전달
-- **최종 구조**: **분리형(split)** — Gramine SGX enclave(trusted) + 별도 GPU 워커(untrusted) + IPC
-  - GPU를 enclave 안에서 직접 쓰는 방식(ioctl 포워딩)은 **불가능에 가까움**을 실측으로 확인 (→ §8)
+- **최종 구조**: **분리형(split)** — Gramine SGX enclave(trusted) + 별도 GPU 워커(untrusted) + **공유메모리 IPC**
+  - GPU를 enclave 안에서 직접 쓰는 방식(ioctl 포워딩)은 **불가능에 가까움**을 실측으로 확인 (→ §7)
+  - IPC는 TCP에서 출발해 **`untrusted_shm` + `cudaHostRegister` + `cuStreamWriteValue32`/`WaitValue32`** 로 진화 (→ §8b–§8g)
+  - enclave responder는 **C로 작성** (Python tight-spin 대비 floor 차이는 없지만, CUDA driver API 호출 비용이 진짜 floor임을 §8e에서 확정)
+  - **multi-lane (V/QK 병렬)**: SHM을 N개 lane으로 분할, 각 lane = enclave pthread + worker CUDA stream → DMA 동시 사용
 
 ```
-┌─ enclave (EPC, trusted) ───┐        ┌─ GPU worker (untrusted) ──┐
-│ Python + 민감 로직         │        │ 일반 PyTorch + CUDA       │
-│ 데이터/LoRA 가중치, OTP    │  TCP   │ (nvcr pytorch, --gpus)    │
-│ X' = X + R   ──────────────┼──────▶ │ Y' = X' @ W (H100)        │
-│ Y  = Y' − (R@W) ◀──────────┼────────┤ (마스킹된 데이터만 봄)    │
-└────────────────────────────┘        └───────────────────────────┘
+┌─ enclave (EPC, trusted) ──────┐                                  ┌─ GPU worker (untrusted) ─────┐
+│ C responder + 민감 로직       │   /dev/shm/loro_*.bin            │ CUDA driver API (cu*)        │
+│ 데이터/LoRA 가중치, OTP       │   (host /dev/shm 한 페이지)      │ (nvcr pytorch, --gpus)       │
+│                               │                                  │                              │
+│  lane 0 ─ pthread ─ mmap ─────┼──┐  ┌──────────────────────────┐ │  ┌── cudaHostRegister'd ──┐ │
+│  lane 1 ─ pthread ─ mmap ─────┼──┼─▶│ 같은 물리 페이지         │◀┼──┤ → cudaHostGetDevPtr    │ │
+│  ...                          │  │  │ (untrusted_shm + --ipc)  │ │  │ → cuStreamWrite/Wait32 │ │
+│  lane N ─ pthread ─ mmap ─────┼──┘  └──────────────────────────┘ │  └─ + cudaMemcpyAsync ────┘ │
+│                               │                                  │                              │
+│  X' = X + R   ───── write ────┼──────────── handoff ─────────────┼──▶ Y' = X' @ W (H100)        │
+│  Y  = Y' − (R@W) ◀── read ────┼────── (per-lane ping-pong) ──────┤    (마스킹된 데이터만 봄)    │
+└───────────────────────────────┘                                  └──────────────────────────────┘
 ```
+
+per-lane handoff RTT ~14–17 μs (16 KB–256 KB 영역), aggregate BW 23→32 GB/s (N=1→4, 1 MB). lora_shield 영향: decode +5–10%, prefill +13–15% (→ §8g).
 
 ---
 
